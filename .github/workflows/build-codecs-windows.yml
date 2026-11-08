@@ -1,0 +1,131 @@
+name: Build voice codecs (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      codecs:
+        description: "Welche Codec-Dateien sollen gebaut werden?"
+        type: choice
+        options:
+          - all
+          - tetra ambe2 ambe imbe ysf
+          - ambe2 ambe imbe
+          - tetra
+          - ambe2
+          - ambe
+          - imbe
+          - ysf
+        default: all
+        required: true
+      legal_notice:
+        description: "Ich habe den Patent- und Lizenzhinweis in docs/CODECS-BUILD-HELPER.md gelesen."
+        type: choice
+        options:
+          - "no"
+          - "yes"
+        default: "no"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: inputs.legal_notice == 'yes'
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Get OnAir source
+        uses: actions/checkout@v7
+
+      - name: Install Windows build tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-make
+            git
+
+      - name: Check selection and prepare output
+        run: |
+          set -euo pipefail
+          mkdir -p codec-output
+          echo "Selected codecs: ${{ inputs.codecs }}"
+          if [ "${{ inputs.legal_notice }}" != "yes" ]; then
+            echo "The legal and licence notice must be acknowledged."
+            exit 1
+          fi
+
+      - name: Download the pinned mbelib-neo source
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/arancormonk/mbelib-neo.git mbelib-src
+          git -C mbelib-src checkout --quiet a3c7bbdae9eb21cbfab57006c1a5daca7bdcba7f
+          test "$(git -C mbelib-src rev-parse HEAD)" = "a3c7bbdae9eb21cbfab57006c1a5daca7bdcba7f"
+
+      - name: Build mbelib-neo
+        run: |
+          set -euo pipefail
+          cmake -S mbelib-src -B mbelib-build -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMBELIB_BUILD_TESTS=OFF \
+            -DMBELIB_BUILD_EXAMPLES=OFF \
+            -DMBELIB_WARNINGS_AS_ERRORS=OFF
+          cmake --build mbelib-build --parallel 2
+          LIB="$(find mbelib-build -type f -name 'libmbe*static*.a' -print -quit)"
+          if [ -z "$LIB" ]; then
+            LIB="$(find mbelib-build -type f -name 'libmbe*.a' -print -quit)"
+          fi
+          test -n "$LIB"
+          echo "MBE_LIBRARY=$LIB" >> "$GITHUB_ENV"
+          VERSION_HEADER="$(find mbelib-build -type f -name version.h -print -quit)"
+          test -n "$VERSION_HEADER"
+          GEN_INCLUDE="$(dirname "$(dirname "$VERSION_HEADER")")"
+          echo "MBE_GENERATED_INCLUDE=$GEN_INCLUDE" >> "$GITHUB_ENV"
+
+      - name: Build selected codec DLLs
+        env:
+          CODEC_SELECTION: ${{ inputs.codecs }}
+        run: |
+          set -euo pipefail
+          for codec in $CODEC_SELECTION; do
+            if [ "$codec" = "all" ]; then
+              codecs="tetra ambe2 ambe imbe ysf"
+              break
+            fi
+            codecs="${codecs:-} $codec"
+          done
+          for codec in $codecs; do
+            case "$codec" in
+              tetra|ambe2|ambe|imbe|ysf) ;;
+              *) echo "Unknown codec: $codec"; exit 1 ;;
+            esac
+            echo "Building $codec ..."
+            gcc -shared -O2 "-DCODEC_${codec^^}" \
+              -Imbelib-src/include "-I$MBE_GENERATED_INCLUDE" \
+              tools/codec-builder/onair_codec_wrapper.c "$MBE_LIBRARY" \
+              -lm -o "codec-output/onair-codec-$codec.dll"
+          done
+          ls -lh codec-output
+
+      - name: Include build information
+        run: |
+          cat > codec-output/README.txt <<'EOF'
+          OnAir voice codec plug-ins built by GitHub Actions.
+          Source: mbelib-neo commit a3c7bbdae9eb21cbfab57006c1a5daca7bdcba7f
+          Licence: mbelib-neo is GPL-2.0-or-later. Review the OnAir codec helper
+          documentation and applicable patent and local legal requirements.
+          These DLLs are build artifacts, not official OnAir releases.
+          EOF
+
+      - name: Upload codec DLLs
+        uses: actions/upload-artifact@v7
+        with:
+          name: onair-windows-codecs
+          path: codec-output/
+          if-no-files-found: error
