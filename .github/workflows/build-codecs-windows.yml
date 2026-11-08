@@ -106,7 +106,7 @@ jobs:
               *) echo "Unknown codec: $codec"; exit 1 ;;
             esac
             echo "Building $codec ..."
-            gcc -shared -O2 "-DCODEC_${codec^^}" \
+            gcc -shared -O2 -DMBE_STATIC "-DCODEC_${codec^^}" \
               -Imbelib-src/include "-I$MBE_GENERATED_INCLUDE" \
               tools/codec-builder/onair_codec_wrapper.c "$MBE_LIBRARY" \
               -lm -o "codec-output/onair-codec-$codec.dll"
