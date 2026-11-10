@@ -1,0 +1,59 @@
+name: Build Inmarsat Aero AMBE codec (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      legal_notice:
+        description: "Confirm that you have read the patent and licence notice in docs/CODECS.md"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+jobs:
+  build:
+    if: ${{ inputs.legal_notice == 'yes' }}
+    runs-on: windows-2022
+    steps:
+      - name: Check out OnAir
+        uses: actions/checkout@v4
+
+      - name: Check out libaeroambe
+        uses: actions/checkout@v4
+        with:
+          repository: jontio/libaeroambe
+          path: libaeroambe-src
+
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-make
+
+      - name: Build Aero AMBE library
+        shell: msys2 {0}
+        run: |
+          cmake -S "$GITHUB_WORKSPACE/libaeroambe-src/mbelib-master" -B "$GITHUB_WORKSPACE/libaeroambe-src/mbelib-master/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DDISABLE_TEST=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build "$GITHUB_WORKSPACE/libaeroambe-src/mbelib-master/build" --config Release
+
+      - name: Build OnAir Aero plugin
+        shell: msys2 {0}
+        run: |
+          cmake -S "$GITHUB_WORKSPACE/tools/addons/aeroambe" -B "$GITHUB_WORKSPACE/aeroambe-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DAEROAMBE_MBELIB="$GITHUB_WORKSPACE/libaeroambe-src/mbelib-master"
+          cmake --build "$GITHUB_WORKSPACE/aeroambe-build" --config Release
+          cp "$GITHUB_WORKSPACE/libaeroambe-src/mbelib-master/build/libmbe.dll" "$GITHUB_WORKSPACE/aeroambe-build/" 
+
+      - name: Upload Windows codec
+        uses: actions/upload-artifact@v4
+        with:
+          name: onair-inmarsat-aero-codec-windows
+          path: |
+            aeroambe-build/onair-codec-aeroambe.dll
+            aeroambe-build/libmbe.dll
+          if-no-files-found: error
